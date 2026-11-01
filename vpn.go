@@ -45,65 +45,114 @@ func (s *Server) OVPNConfig() (string, error) {
 	return string(b), nil
 }
 
-var apiURLs = []string{
-	"https://www.vpngate.net/api/iphone/",
-	"http://www.vpngate.net/api/iphone/",
+// fetch sources, in order: the official API, then a public reader mirror
+// of the same API (helps when vpngate.net itself is unreachable locally).
+var apiSources = []struct{ Label, URL string }{
+	{"official https", "https://www.vpngate.net/api/iphone/"},
+	{"official http", "http://www.vpngate.net/api/iphone/"},
+	{"mirror (jina) of official http", "https://r.jina.ai/http://www.vpngate.net/api/iphone/"},
+	{"mirror (jina) of official https", "https://r.jina.ai/https://www.vpngate.net/api/iphone/"},
 }
 
 func atoi(s string) int     { n, _ := strconv.Atoi(strings.TrimSpace(s)); return n }
 func atoi64(s string) int64 { n, _ := strconv.ParseInt(strings.TrimSpace(s), 10, 64); return n }
 
-// fetchServers downloads and parses the VPN Gate server list.
-func fetchServers() ([]Server, error) {
-	var lastErr error
-	client := &http.Client{Timeout: 30 * time.Second}
-	for _, u := range apiURLs {
-		req, err := http.NewRequest("GET", u, nil)
-		if err != nil {
-			return nil, err
+// fetchServers tries every (route x source) combination until one works.
+// Every attempt is written to the connection log so failures are visible.
+// Returns the servers and a human-readable route description.
+func fetchServers() ([]Server, string, error) {
+	var errs []string
+	cands := candidateTransports()
+	// Phase 1: official sources on every route. Phase 2: mirror sources.
+	for _, phase := range []int{0, 1} {
+		for _, cand := range cands {
+			tr, err := transportFor(cand.Proxy)
+			if err != nil {
+				if phase == 0 {
+					conn.logf("Fetch: skip route %s (%v)", cand.Label, err)
+				}
+				continue
+			}
+			client := &http.Client{Timeout: 14 * time.Second, Transport: tr}
+			for _, src := range apiSources {
+				if (phase == 0) == strings.HasPrefix(src.Label, "mirror") {
+					continue
+				}
+				servers, err := fetchOne(client, src.URL)
+				if err != nil {
+					msg := fmt.Sprintf("%s via %s: %v", src.Label, cand.Label, shortErr(err))
+					errs = append(errs, msg)
+					conn.logf("Fetch failed: %s", msg)
+					continue
+				}
+				via := src.Label + " via " + cand.Label
+				conn.logf("Fetched %d servers (%s)", len(servers), via)
+				return servers, via, nil
+			}
 		}
-		req.Header.Set("User-Agent", "vpngate-gui/1.0")
-		resp, err := client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if resp.StatusCode != 200 {
-			lastErr = fmt.Errorf("%s: HTTP %d", u, resp.StatusCode)
-			continue
-		}
-		servers, err := parseServers(string(body))
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if len(servers) == 0 {
-			lastErr = fmt.Errorf("%s: 0 servers parsed", u)
-			continue
-		}
-		return servers, nil
 	}
-	return nil, lastErr
+	return nil, "", fmt.Errorf("all fetch routes failed: %s", strings.Join(errs, "; "))
+}
+
+func shortErr(err error) error {
+	s := err.Error()
+	if len(s) > 160 {
+		s = s[:160] + "..."
+	}
+	return fmt.Errorf("%s", s)
+}
+
+func fetchOne(client *http.Client, u string) ([]Server, error) {
+	req, err := http.NewRequest("GET", u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "vpngate-gui/1.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, err
+	}
+	servers, err := parseServers(string(body))
+	if err != nil {
+		return nil, err
+	}
+	if len(servers) == 0 {
+		return nil, fmt.Errorf("0 servers parsed")
+	}
+	return servers, nil
 }
 
 // parseServers parses the CSV payload. Format: a "*vpn_servers" line,
 // a "#HostName,..." header line, data rows, and a trailing "*" line.
 func parseServers(payload string) ([]Server, error) {
+	// Locate the "#HostName,..." header line; ignore anything before it
+	// (official "*vpn_servers" banner, mirror page wrappers, BOM, etc.).
+	raw := strings.Split(payload, "\n")
+	start := -1
+	for i, l := range raw {
+		if strings.HasPrefix(strings.TrimSpace(l), "#HostName,") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return nil, fmt.Errorf("header line not found in payload (%d bytes)", len(payload))
+	}
 	var lines []string
-	for _, l := range strings.Split(payload, "\n") {
-		l = strings.TrimRight(l, "\r")
-		if l == "" || l == "*" || strings.HasPrefix(l, "*vpn") {
+	for _, l := range raw[start:] {
+		l = strings.TrimRight(strings.TrimSpace(l), "\r")
+		if l == "" || l == "*" {
 			continue
 		}
-		if strings.HasPrefix(l, "#") {
-			l = strings.TrimPrefix(l, "#")
-		}
+		l = strings.TrimPrefix(l, "#")
 		lines = append(lines, l)
 	}
 	if len(lines) < 2 {
@@ -141,23 +190,24 @@ type cache struct {
 	mu        sync.Mutex
 	servers   []Server
 	fetchedAt time.Time
+	via       string
 }
 
-func (c *cache) get(force bool) ([]Server, time.Time, error) {
+func (c *cache) get(force bool) ([]Server, time.Time, string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !force && len(c.servers) > 0 && time.Since(c.fetchedAt) < 10*time.Minute {
-		return c.servers, c.fetchedAt, nil
+		return c.servers, c.fetchedAt, c.via, nil
 	}
-	s, err := fetchServers()
+	s, via, err := fetchServers()
 	if err != nil {
 		if len(c.servers) > 0 {
-			return c.servers, c.fetchedAt, nil
-		} // serve stale
-		return nil, time.Time{}, err
+			return c.servers, c.fetchedAt, c.via + " (stale cache; refresh failed)", nil
+		}
+		return nil, time.Time{}, "", err
 	}
-	c.servers, c.fetchedAt = s, time.Now()
-	return s, c.fetchedAt, nil
+	c.servers, c.fetchedAt, c.via = s, time.Now(), via
+	return s, c.fetchedAt, via, nil
 }
 
 func (c *cache) find(host string) (Server, bool) {

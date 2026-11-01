@@ -44,6 +44,13 @@ tr:hover td{background:#1b2438}
 <div class="stat"><span class="small">Lowest ping</span><b id="stPing">-</b></div>
 </div></div>
 
+<div class="card"><div class="row">
+<div style="flex:1;min-width:280px"><label>Fetch proxy (for downloading the server list; empty = auto: system proxy / common local ports 2080, 7890, 10809, 1080)</label>
+<input id="fProxy" style="width:100%" placeholder="http://127.0.0.1:7890 or socks5://127.0.0.1:1080"></div>
+<button onclick="saveProxy()">Save proxy + refresh</button>
+<span class="small" id="proxyInfo"></span>
+</div><p class="small">If the list will not load: turn on your proxy app first, then Refresh. v1.0.0 did not use the system proxy at all - v1.0.1 auto-detects it and also tries mirror sources; every attempt is printed in the Connection log below.</p></div>
+
 <div class="card">
 <label>Protocol (used by the Connect button)</label>
 <div class="proto" id="protoTabs">
@@ -126,13 +133,31 @@ tb.innerHTML=list.map(s=>'<tr><td>'+s.country_short+' '+s.country_long+'</td><td
 function resetFilters(){['fSearch','fSpeed','fPing','fSess','fUptime'].forEach(id=>document.getElementById(id).value=id==='fSearch'?'':'0');
 document.getElementById('fCountry').value='JP';document.getElementById('fSort').value='speed';sortKey='speed';render();}
 async function load(force){
+let tb=document.getElementById('tbody');
+try{
 let r=await fetch('/api/servers'+(force?'?refresh=1':''));let d=await r.json();
-servers=d.servers||[];document.getElementById('fetchedAt').textContent='List fetched: '+d.fetched_at;
+if(d.error){
+tb.innerHTML='<tr><td colspan="10" style="color:#ef4444;white-space:normal">Failed to fetch the server list: '+d.error+'<br>Check the Connection log below for each attempt. Turn on your proxy app and click "Refresh list", or set your proxy address in the Fetch proxy box above (e.g. http://127.0.0.1:2080 for sbgui, 7890 for Clash).</td></tr>';
+document.getElementById('fetchedAt').textContent='Fetch failed - see log';poll();return;}
+servers=d.servers||[];document.getElementById('fetchedAt').textContent='List fetched: '+d.fetched_at+(d.via?' via '+d.via:'');
 document.getElementById('stTotal').textContent=d.count;
 document.getElementById('stCountries').textContent=Object.keys(d.countries).length;
 let sel=document.getElementById('fCountry'),cur=sel.value;
 sel.innerHTML='<option value="">All countries</option>'+Object.keys(d.countries).sort().map(c=>'<option value="'+c+'">'+c+' ('+d.countries[c]+')</option>').join('');
-sel.value=cur||'JP';if(![...sel.options].some(o=>o.value===sel.value))sel.value='';render();}
+sel.value=cur||'JP';if(![...sel.options].some(o=>o.value===sel.value))sel.value='';render();
+}catch(e){
+tb.innerHTML='<tr><td colspan="10" style="color:#ef4444;white-space:normal">Dashboard could not reach the local vpgui service: '+e+'. Is vpgui still running?</td></tr>';
+document.getElementById('fetchedAt').textContent='Fetch failed';}
+poll();}
+async function saveProxy(){
+let v=document.getElementById('fProxy').value.trim();
+await fetch('/api/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({proxy:v})});
+load(true);}
+async function loadProxy(){
+try{let r=await fetch('/api/proxy');let d=await r.json();
+document.getElementById('fProxy').value=d.proxy||'';
+document.getElementById('proxyInfo').textContent=d.system_proxy?('Detected system proxy: '+d.system_proxy):'No system proxy detected';
+}catch(e){}}
 async function connect(host){
 await fetch('/api/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:host,protocol:proto})});poll();}
 async function quickPick(){let l=sortList(filtered());if(!l.length){alert('No server matches the filters');return;}connect(l[0].hostname);}
@@ -145,5 +170,5 @@ b.classList.toggle('on',!!d.active);
 document.getElementById('btnDisc').style.display=d.active?'':'none';
 document.getElementById('log').textContent=(d.log||[]).join('\n');
 let el=document.getElementById('log');el.scrollTop=el.scrollHeight;}
-setProto('openvpn');load(false);poll();setInterval(poll,3000);
+setProto('openvpn');loadProxy();load(false);poll();setInterval(poll,3000);
 </script></body></html>

@@ -7,6 +7,22 @@ official VPN Gate API and lets you filter, sort and connect in one click.
 No dependencies: pure Go (standard library only), ~7 MB binary, embedded web
 dashboard at `http://127.0.0.1:20124`.
 
+## v1.0.1 fix - list would not load behind a system proxy
+
+v1.0.0 fetched the list with a bare direct connection and ignored the OS
+system proxy, and the dashboard silently swallowed fetch errors (stuck on
+"Loading..."). v1.0.1 fixes both:
+
+- Fetch routes are tried in order: saved proxy -> **system proxy**
+  (Windows registry / macOS scutil - what browsers use) -> env proxy ->
+  direct -> auto-probed local proxy ports (2080 sbgui/sing-box, 7890/7897
+  Clash, 10809 v2rayN, 1080/10808 SOCKS)
+- Both `http://` and `socks5://` proxies are supported; a proxy can also be
+  typed into the new **Fetch proxy** box in the dashboard (persisted)
+- Mirror copies of the official API are tried after the official endpoints
+- Fetch errors are returned as JSON and **every attempt is printed in the
+  Connection log**, so a failure now explains itself
+
 ## Features
 
 - **Live server list** from the official API (`/api/iphone/`), cached 10 min
