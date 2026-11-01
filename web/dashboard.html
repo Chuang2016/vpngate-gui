@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>vpgui - VPN Gate Quick Launcher</title>
+<style>
+:root{--bg:#0f1420;--card:#171e2e;--line:#26314a;--txt:#e6ebf5;--dim:#8fa0bd;--acc:#3b82f6;--ok:#22c55e;--bad:#ef4444}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.5 -apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+h1{font-size:18px;margin:0}.sub{color:var(--dim);font-size:12px}
+.badge{padding:3px 10px;border-radius:20px;background:#1d2a44;color:var(--dim);font-size:12px}
+.badge.on{background:#12351f;color:var(--ok)}
+main{padding:16px 20px;max-width:1240px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+input,select{background:#0d1322;color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:7px 9px;font-size:13px}
+button{background:var(--acc);color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer;font-size:13px}
+button.ghost{background:#22304d}button.danger{background:var(--bad)}button:disabled{opacity:.5;cursor:default}
+.proto{display:flex;gap:8px;flex-wrap:wrap}
+.proto button{background:#22304d}.proto button.sel{background:var(--acc)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{color:var(--dim);cursor:pointer;user-select:none}th:hover{color:var(--txt)}
+tr:hover td{background:#1b2438}
+.num{text-align:right}.fast{color:var(--ok)}
+#log{background:#0a0f1a;border:1px solid var(--line);border-radius:8px;padding:10px;height:170px;overflow:auto;font:12px/1.6 Consolas,Menlo,monospace;white-space:pre-wrap}
+.small{font-size:12px;color:var(--dim)}a{color:var(--acc)}
+.stats{display:flex;gap:18px;flex-wrap:wrap}.stat b{font-size:18px;display:block}
+</style></head><body>
+<header>
+<h1>vpgui</h1><span class="sub">VPN Gate Quick Launcher - L2TP/IPsec - OpenVPN - MS-SSTP - SoftEther</span>
+<span id="connBadge" class="badge">Disconnected</span>
+<button id="btnDisc" class="danger" style="display:none" onclick="disconnect()">Disconnect</button>
+<span class="sub" id="fetchedAt"></span>
+<button class="ghost" onclick="load(true)">Refresh list</button>
+</header>
+<main>
+
+<div class="card"><div class="stats">
+<div class="stat"><span class="small">Servers</span><b id="stTotal">-</b></div>
+<div class="stat"><span class="small">After filters</span><b id="stShown">-</b></div>
+<div class="stat"><span class="small">Countries</span><b id="stCountries">-</b></div>
+<div class="stat"><span class="small">Fastest shown</span><b id="stFast">-</b></div>
+<div class="stat"><span class="small">Lowest ping</span><b id="stPing">-</b></div>
+</div></div>
+
+<div class="card">
+<label>Protocol (used by the Connect button)</label>
+<div class="proto" id="protoTabs">
+<button data-p="l2tp" onclick="setProto('l2tp')">L2TP/IPsec</button>
+<button data-p="openvpn" class="sel" onclick="setProto('openvpn')">OpenVPN</button>
+<button data-p="sstp" onclick="setProto('sstp')">MS-SSTP</button>
+<button data-p="softether" onclick="setProto('softether')">SoftEther (SSL-VPN)</button>
+</div>
+<p class="small" id="protoHint"></p>
+<div class="row" style="margin-top:8px">
+<div><label>Country / Region</label><select id="fCountry" onchange="render()"></select></div>
+<div><label>Search (host / IP / operator)</label><input id="fSearch" size="20" oninput="render()"></div>
+<div><label>Min speed (Mbps)</label><input id="fSpeed" type="number" min="0" value="0" style="width:90px" oninput="render()"></div>
+<div><label>Max ping (ms, 0 = any)</label><input id="fPing" type="number" min="0" value="0" style="width:90px" oninput="render()"></div>
+<div><label>Max online sessions</label><input id="fSess" type="number" min="0" value="0" style="width:100px" oninput="render()"></div>
+<div><label>Min uptime (days)</label><input id="fUptime" type="number" min="0" step="0.5" value="0" style="width:90px" oninput="render()"></div>
+<div><label>Sort by</label><select id="fSort" onchange="sortSel()">
+<option value="score">Score</option><option value="speed" selected>Speed</option>
+<option value="ping">Ping (low first)</option><option value="sessions">Sessions (low first)</option>
+<option value="uptime">Uptime (days)</option><option value="users">Total users</option>
+</select></div>
+<button class="ghost" onclick="resetFilters()">Reset filters</button>
+<button onclick="quickPick()">Quick pick best + connect</button>
+</div>
+<p class="small">All VPN Gate relays use user <b>vpn</b> / password <b>vpn</b>; L2TP IPsec pre-shared key is <b>vpn</b>. Native L2TP/SSTP creation on Windows may need Administrator; OpenVPN/SoftEther need their client installed (config/profile downloads are provided per row).</p>
+</div>
+
+<div class="card" style="overflow:auto">
+<table><thead><tr>
+<th onclick="sortBy('country_short')">Country</th><th onclick="sortBy('hostname')">Hostname</th>
+<th>IP</th><th class="num" onclick="sortBy('ping')">Ping</th>
+<th class="num" onclick="sortBy('speed')">Speed</th><th class="num" onclick="sortBy('sessions')">Sessions</th>
+<th class="num" onclick="sortBy('uptime_days')">Uptime</th><th class="num" onclick="sortBy('total_users')">Users</th>
+<th class="num" onclick="sortBy('score')">Score</th><th>Action</th>
+</tr></thead><tbody id="tbody"><tr><td colspan="10">Loading...</td></tr></tbody></table>
+</div>
+
+<div class="card"><label>Connection log</label><div id="log"></div></div>
+<p class="small">Data: official VPN Gate API (University of Tsukuba). List is cached for 10 minutes. Academic-use relays run by volunteers - respect each operator's terms.</p>
+</main>
+
+<script>
+let servers=[], proto='openvpn', sortKey='speed', sortAsc=false;
+const hints={
+l2tp:'L2TP/IPsec - Windows: creates a native VPN connection and dials it. macOS: downloads a .mobileconfig profile to install, then connect from System Settings > VPN. PSK: vpn.',
+openvpn:'OpenVPN - uses the embedded per-server .ovpn config. If the openvpn binary is installed it is launched directly; otherwise download the .ovpn and import it into OpenVPN Connect / Tunnelblick.',
+sstp:'MS-SSTP - Windows: native SSTP connection (best Windows choice, port 443). macOS/Linux: uses sstpc if installed.',
+softether:'SoftEther (SSL-VPN) - uses vpncmd if the SoftEther VPN Client is installed; otherwise a ready-to-run vpncmd script is generated.'};
+function setProto(p){proto=p;document.querySelectorAll('#protoTabs button').forEach(b=>b.classList.toggle('sel',b.dataset.p===p));document.getElementById('protoHint').textContent=hints[p];}
+function fmtSpeed(m){return m>=100?Math.round(m)+' Mbps':m.toFixed(1)+' Mbps';}
+function filtered(){
+let c=document.getElementById('fCountry').value,q=document.getElementById('fSearch').value.toLowerCase(),
+sp=+document.getElementById('fSpeed').value||0,pg=+document.getElementById('fPing').value||0,
+se=+document.getElementById('fSess').value||0,up=+document.getElementById('fUptime').value||0;
+return servers.filter(s=>(!c||s.country_short===c)&&(!q||s.hostname.toLowerCase().includes(q)||s.ip.includes(q)||(s.operator||'').toLowerCase().includes(q))
+&&s.speed_mbps>=sp&&(!pg||(s.ping>0&&s.ping<=pg))&&(!se||s.sessions<=se)&&s.uptime_days>=up);}
+function sortList(list){
+let k=sortKey;list.sort((a,b)=>{
+if(k==='ping'){let x=a.ping<=0?99999:a.ping,y=b.ping<=0?99999:b.ping;return x-y;}
+if(k==='sessions')return a.sessions-b.sessions;
+if(typeof a[k]==='string')return a[k].localeCompare(b[k]);
+return (b[k]||0)-(a[k]||0);});return list;}
+function sortBy(k){sortKey=k;let v=(k==='uptime_days'?'uptime':k);let sel=document.getElementById('fSort');if([...sel.options].some(o=>o.value===v))sel.value=v;render();}
+function sortSel(){let v=document.getElementById('fSort').value;sortKey=(v==='uptime'?'uptime_days':v);render();}
+function render(){
+let list=sortList(filtered());
+document.getElementById('stShown').textContent=list.length;
+if(list.length){document.getElementById('stFast').textContent=fmtSpeed(Math.max(...list.map(s=>s.speed_mbps)));
+let ps=list.map(s=>s.ping).filter(p=>p>0);document.getElementById('stPing').textContent=ps.length?Math.min(...ps)+' ms':'-';}
+let tb=document.getElementById('tbody');
+tb.innerHTML=list.map(s=>'<tr><td>'+s.country_short+' '+s.country_long+'</td><td>'+s.hostname+'</td><td>'+s.ip+'</td>'
++'<td class="num">'+(s.ping>0?s.ping+' ms':'-')+'</td><td class="num fast">'+fmtSpeed(s.speed_mbps)+'</td>'
++'<td class="num">'+s.sessions+'</td><td class="num">'+s.uptime_days.toFixed(1)+' d</td>'
++'<td class="num">'+s.total_users.toLocaleString()+'</td><td class="num">'+s.score.toLocaleString()+'</td>'
++'<td><button onclick="connect(\''+s.hostname+'\')">Connect</button> '
++'<a href="/api/download?kind=ovpn&host='+s.hostname+'">.ovpn</a> '
++'<a href="/api/download?kind=mobileconfig&host='+s.hostname+'">macOS L2TP</a> '
++'<a href="/api/download?kind=softether&host='+s.hostname+'">SoftEther</a></td></tr>').join('')
+||'<tr><td colspan="10">No servers match the filters.</td></tr>';}
+function resetFilters(){['fSearch','fSpeed','fPing','fSess','fUptime'].forEach(id=>document.getElementById(id).value=id==='fSearch'?'':'0');
+document.getElementById('fCountry').value='JP';document.getElementById('fSort').value='speed';sortKey='speed';render();}
+async function load(force){
+let r=await fetch('/api/servers'+(force?'?refresh=1':''));let d=await r.json();
+servers=d.servers||[];document.getElementById('fetchedAt').textContent='List fetched: '+d.fetched_at;
+document.getElementById('stTotal').textContent=d.count;
+document.getElementById('stCountries').textContent=Object.keys(d.countries).length;
+let sel=document.getElementById('fCountry'),cur=sel.value;
+sel.innerHTML='<option value="">All countries</option>'+Object.keys(d.countries).sort().map(c=>'<option value="'+c+'">'+c+' ('+d.countries[c]+')</option>').join('');
+sel.value=cur||'JP';if(![...sel.options].some(o=>o.value===sel.value))sel.value='';render();}
+async function connect(host){
+await fetch('/api/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host:host,protocol:proto})});poll();}
+async function quickPick(){let l=sortList(filtered());if(!l.length){alert('No server matches the filters');return;}connect(l[0].hostname);}
+async function disconnect(){await fetch('/api/disconnect',{method:'POST'});poll();}
+async function poll(){
+let r=await fetch('/api/status');let d=await r.json();
+let b=document.getElementById('connBadge');
+b.textContent=d.active?('Connected: '+d.host+' via '+d.protocol+' since '+d.started):'Disconnected';
+b.classList.toggle('on',!!d.active);
+document.getElementById('btnDisc').style.display=d.active?'':'none';
+document.getElementById('log').textContent=(d.log||[]).join('\n');
+let el=document.getElementById('log');el.scrollTop=el.scrollHeight;}
+setProto('openvpn');load(false);poll();setInterval(poll,3000);
+</script></body></html>
